@@ -1,15 +1,14 @@
-from scipy.special import expit
 import numpy as np
-import tensorflow as tf
 from tensorflow.keras.datasets import mnist
+import tensorflow as tf
 
 
 def sigmoid(x):
-    return expit(x)
+    return 1 / (1 + np.exp(-x))
 
 
 class NeuralNetwork:
-    def __init__(self, X_data, Y_data, n_hidden_neurons=50, n_categories=10, epochs=10, batch_size=100, eta=0.1,
+    def __init__(self, X_data, Y_data, n_hidden_neurons=50, n_categories=10, epochs=10, batch_size=50, eta=0.1,
                  lmbd=0.0, patience=5):
         self.X_data_full = X_data
         self.Y_data_full = Y_data
@@ -88,15 +87,15 @@ class NeuralNetwork:
         m_hidden_bias_corrected = self.m_hidden_bias / (1 - self.beta1 ** t)
         v_hidden_bias_corrected = self.v_hidden_bias / (1 - self.beta2 ** t)
         self.output_weights -= self.eta * m_output_weights_corrected / (
-                np.sqrt(v_output_weights_corrected) + self.epsilon)
+                    np.sqrt(v_output_weights_corrected) + self.epsilon)
         self.output_bias -= self.eta * m_output_bias_corrected / (np.sqrt(v_output_bias_corrected) + self.epsilon)
         self.hidden_weights -= self.eta * m_hidden_weights_corrected / (
-                np.sqrt(v_hidden_weights_corrected) + self.epsilon)
+                    np.sqrt(v_hidden_weights_corrected) + self.epsilon)
         self.hidden_bias -= self.eta * m_hidden_bias_corrected / (np.sqrt(v_hidden_bias_corrected) + self.epsilon)
 
     def calculate_loss(self, X, y):
         probabilities = self.feed_forward_out(X)
-        loss = -np.mean(np.log(probabilities[np.arange(X.shape[0]), y.reshape(-1, 1).astype(int)]))
+        loss = -np.mean(np.log(probabilities[np.arange(X.shape[0]), y]))
         if self.lmbd > 0.0:
             weights_sum = np.sum(np.square(self.hidden_weights)) + np.sum(np.square(self.output_weights))
             loss += 0.5 * self.lmbd * weights_sum
@@ -121,79 +120,70 @@ class NeuralNetwork:
         for epoch in range(self.epochs):
             np.random.shuffle(data_indices)
             for j in range(self.iterations):
-                chosen_datapoints = data_indices[j * self.batch_size:(j + 1) * self.batch_size]
+                chosen_datapoints = data_indices[j * self.batch_size: (j + 1) * self.batch_size]
                 self.X_data = self.X_data_full[chosen_datapoints]
                 self.Y_data = self.Y_data_full[chosen_datapoints]
+                self.Y_data = np.eye(self.n_categories)[self.Y_data]
                 self.feed_forward()
-                self.backpropagation(epoch * self.iterations + j + 1)
+                self.backpropagation(t=(epoch + 1))
 
-            # Check loss on validation data
+            # Calculate loss on validation set for early stopping
             val_loss = self.calculate_loss(self.X_data_val, self.Y_data_val)
+
             if val_loss < self.best_loss:
+                # Improvement in validation loss
                 self.best_loss = val_loss
                 self.best_weights = {
-                    'hidden_weights': self.hidden_weights.copy(),
-                    'hidden_bias': self.hidden_bias.copy(),
-                    'output_weights': self.output_weights.copy(),
-                    'output_bias': self.output_bias.copy()
+                    "hidden_weights": np.copy(self.hidden_weights),
+                    "hidden_bias": np.copy(self.hidden_bias),
+                    "output_weights": np.copy(self.output_weights),
+                    "output_bias": np.copy(self.output_bias),
                 }
-                patience_count = 0
+                patience_count = 0  # Reset patience count
             else:
+                # No improvement in validation loss
                 patience_count += 1
 
-            if patience_count >= self.patience:
-                print("Training stopped due to early stopping.")
+            if patience_count == self.patience:
+                # Early stopping condition met
+                print(f"Early stopping at epoch {epoch + 1}...")
                 break
 
-    def set_validation_data(self, X_val, y_val):
-        self.X_data_val = X_val
-        self.Y_data_val = y_val
-
-
-def generate_adversarial_example(model, X, y, epsilon=0.1):
-    X_adv = X.copy()
-    gradients = model.calculate_gradients(X_adv, y)
-    X_adv -= epsilon * np.sign(gradients)
-    return X_adv
+        if self.best_weights is not None:
+            # Restore the best weights found during training
+            self.hidden_weights = self.best_weights["hidden_weights"]
+            self.hidden_bias = self.best_weights["hidden_bias"]
+            self.output_weights = self.best_weights["output_weights"]
+            self.output_bias = self.best_weights["output_bias"]
 
 
 def main():
-    # Load MNIST dataset
-    (X_train, y_train), (X_test, y_test) = mnist.load_data()
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    x_train = x_train.reshape(-1, 28 * 28) / 255.0
+    x_test = x_test.reshape(-1, 28 * 28) / 255.0
+    y_train = y_train.astype(int)
+    y_test = y_test.astype(int)
 
-    # Preprocess data
-    X_train = X_train.reshape((-1, 28 * 28)) / 255.0
-    X_test = X_test.reshape((-1, 28 * 28)) / 255.0
+    # Splitting training data into training and validation sets
+    split_index = int(0.8 * len(x_train))
+    x_train_split = x_train[:split_index]
+    y_train_split = y_train[:split_index]
+    x_val_split = x_train[split_index:]
+    y_val_split = y_train[split_index:]
 
-    # Convert labels to one-hot encoding
-    y_train_onehot = tf.keras.utils.to_categorical(y_train, num_classes=10)
-    y_test_onehot = tf.keras.utils.to_categorical(y_test, num_classes=10)
+    model = NeuralNetwork(x_train_split, y_train_split, n_hidden_neurons=50, n_categories=10, epochs=10, batch_size=50,
+                          eta=0.1, lmbd=0.01, patience=5)
+    model.X_data_val = x_val_split
+    model.Y_data_val = y_val_split
+    model.train()
 
-    # Create and train the neural network
-    nn = NeuralNetwork(X_train, y_train_onehot, n_hidden_neurons=50, n_categories=10, epochs=10, batch_size=100,
-                       eta=0.1, lmbd=0.0, patience=5)
-    nn.set_validation_data(X_test, y_test_onehot)
-    nn.train()
-
-    train_accuracy = nn.score(X_train, y_train)
-    test_accuracy = nn.score(X_test, y_test)
+    train_accuracy = model.score(x_train, y_train)
+    test_accuracy = model.score(x_test, y_test)
 
     print("Part 1:")
     print(f"Train Accuracy: {train_accuracy:.4f}")
     print(f"Test Accuracy: {test_accuracy:.4f}")
 
-    # Generate adversarial example
-    example_index = 0  # Choose an example to generate the adversarial example
-    X_example = X_test[example_index]
-    y_example = y_test[example_index]
-    X_adversarial = generate_adversarial_example(nn, X_example, y_example, epsilon=0.1)
-
-    # Predict the original and adversarial examples
-    y_pred_original = nn.predict(X_example.reshape((1, -1)))
-    y_pred_adversarial = nn.predict(X_adversarial.reshape((1, -1)))
-
-    print("Original Image - Predicted Label:", y_pred_original)
-    print("Adversarial Image - Predicted Label:", y_pred_adversarial)
 
 
 if __name__ == '__main__':
